@@ -20,7 +20,7 @@ def get_config(key: str) -> str:
 
 
 def extract_text(value: Any) -> str:
-    """兼容飞书多维表格记录检索接口返回的文本格式（str 或 list[dict]）。"""
+    """兼容飞书多维表格记录检索接口返回的文本/关联格式。"""
     if value is None:
         return ""
     if isinstance(value, str):
@@ -80,7 +80,6 @@ def _list_all_records(table_id: str) -> List[Dict[str, Any]]:
         resp = requests.post(url, headers=_headers(), params=params, json={}, timeout=20)
         data = resp.json()
 
-        # 若 token 异常过期，清理缓存重试一次
         if data.get("code") in (99991663, 99991664):
             _fetch_tenant_token.clear()
             resp = requests.post(url, headers=_headers(), params=params, json={}, timeout=20)
@@ -100,13 +99,13 @@ def _list_all_records(table_id: str) -> List[Dict[str, Any]]:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_wordbooks() -> List[Dict[str, str]]:
-    """加载词本表。"""
+    """加载 wordbook 表（使用 词本名 列）。"""
     table_id = get_config("FEISHU_WORDBOOK_TABLE_ID")
     items = _list_all_records(table_id)
     books = []
     for item in items:
         fields = item.get("fields", {})
-        name = extract_text(fields.get("词本名称"))
+        name = extract_text(fields.get("词本名") or fields.get("词本名称"))
         if name:
             books.append({
                 "record_id": item.get("record_id", ""),
@@ -118,23 +117,28 @@ def load_wordbooks() -> List[Dict[str, str]]:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_all_words() -> List[Dict[str, str]]:
-    """加载单词表全部单词。"""
+    """加载 word 表（使用 english / phonetic / cn_mean / sentence / tip / 词本名）。"""
     table_id = get_config("FEISHU_WORD_TABLE_ID")
     items = _list_all_records(table_id)
     words = []
     for item in items:
         fields = item.get("fields", {})
-        word = extract_text(fields.get("单词"))
+        word = extract_text(fields.get("english") or fields.get("单词"))
         if not word:
             continue
         words.append({
             "record_id": item.get("record_id", ""),
-            "wordbook": extract_text(fields.get("所属词本")),
+            "wordbook": extract_text(
+                fields.get("词本名")
+                or fields.get("所属词本")
+                or fields.get("wordbook")
+                or fields.get("book")
+            ),
             "word": word,
-            "phonetic": extract_text(fields.get("音标")),
-            "meaning": extract_text(fields.get("释义")),
-            "example": extract_text(fields.get("例句")),
-            "mnemonic": extract_text(fields.get("助记")),
+            "phonetic": extract_text(fields.get("phonetic") or fields.get("音标")),
+            "meaning": extract_text(fields.get("cn_mean") or fields.get("释义")),
+            "example": extract_text(fields.get("sentence") or fields.get("例句")),
+            "mnemonic": extract_text(fields.get("tip") or fields.get("助记")),
         })
     return words
 
@@ -146,14 +150,14 @@ def clear_data_cache() -> None:
 
 
 def create_wordbook(name: str, desc: str = "") -> None:
-    """在飞书词本表中新建词本。"""
+    """在 wordbook 表中新建词本（仅写入 词本名 列）。"""
     app_token = get_config("FEISHU_APP_TOKEN")
     table_id = get_config("FEISHU_WORDBOOK_TABLE_ID")
     url = f"{FEISHU_BASE_URL}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
     resp = requests.post(
         url,
         headers=_headers(),
-        json={"fields": {"词本名称": name.strip(), "描述": desc.strip()}},
+        json={"fields": {"词本名": name.strip()}},
         timeout=15,
     )
     data = resp.json()
@@ -163,7 +167,7 @@ def create_wordbook(name: str, desc: str = "") -> None:
 
 
 def batch_create_words(wordbook_name: str, words: List[Dict[str, str]]) -> int:
-    """批量写入单词到飞书单词表（飞书单次上限 500 条，自动分批）。"""
+    """批量写入单词到 word 表（自动分批，每次最多 500 条）。"""
     if not words:
         return 0
 
@@ -175,12 +179,12 @@ def batch_create_words(wordbook_name: str, words: List[Dict[str, str]]) -> int:
     for w in words:
         records_payload.append({
             "fields": {
-                "所属词本": wordbook_name,
-                "单词": w.get("word", "").strip(),
-                "音标": w.get("phonetic", "").strip(),
-                "释义": w.get("meaning", "").strip(),
-                "例句": w.get("example", "").strip(),
-                "助记": w.get("mnemonic", "").strip(),
+                "词本名": wordbook_name,
+                "english": w.get("word", "").strip(),
+                "phonetic": w.get("phonetic", "").strip(),
+                "cn_mean": w.get("meaning", "").strip(),
+                "sentence": w.get("example", "").strip(),
+                "tip": w.get("mnemonic", "").strip(),
             }
         })
 
